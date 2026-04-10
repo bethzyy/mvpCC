@@ -7,20 +7,32 @@ import { buildSystemPrompt } from '../context/systemPrompt.js';
 import { getGitContext } from '../context/gitContext.js';
 import { renderToolUse, renderCostInfo } from './renderer.js';
 import { CostTracker } from '../cost/tracker.js';
+import { addToHistory, getHistory } from '../history/history.js';
+import { debugLog, debugError } from '../utils/debugLogger.js';
+import { shouldCompact, compactMessages, estimateTokens } from '../context/compactor.js';
+import { saveSession } from '../context/session.js';
+import type { SkillInfo } from '../skills/discovery.js';
+import { writeFileSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
 
 export async function startRepl(
   client: Anthropic,
   tools: ToolDefinition[],
-  options: { model?: string; verbose?: boolean },
+  options: { model?: string; verbose?: boolean; initialMessages?: ConversationMessage[]; skills?: SkillInfo[] },
 ): Promise<void> {
   const verbose = options.verbose || false;
-  const messages: ConversationMessage[] = [];
+  const messages: ConversationMessage[] = options.initialMessages ? [...options.initialMessages] : [];
   const gitContext = await getGitContext();
-  const systemPrompt = buildSystemPrompt(tools, gitContext);
+  const systemPrompt = buildSystemPrompt(tools, gitContext, options.skills);
   const costTracker = new CostTracker();
 
+  // ★ 恢复会话提示
+  if (options.initialMessages && options.initialMessages.length > 0) {
+    console.log(chalk.green(`  Resumed session (${options.initialMessages.length} messages)\n`));
+  }
+
   // ★ 强制 terminal: false 避免 PTY 双回显（!命令、Windows Terminal 等）
-  // 终端驱动仍会正常回显字符，readline 不再额外处理
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -28,7 +40,7 @@ export async function startRepl(
     terminal: false,
   });
 
-  // ★ 权限确认用单独的 readline 实例，避免和主输入冲突
+  // ★ 权限确认用单独的 readline 实例
   const permRl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -57,44 +69,256 @@ export async function startRepl(
     msg: (msg: string) => {
       if (verbose) console.log(chalk.gray(`  [MSG] ${msg}`));
     },
+    compact: (msg: string) => {
+      console.log(chalk.green(`  [COMPACT] ${msg}`));
+    },
   };
 
   console.log(chalk.cyan.bold('\n  Claude Code MVP'));
-  console.log(chalk.gray('  /help for commands, /quit to exit\n'));
+  console.log(chalk.gray('  /help for commands, /quit to exit'));
+  console.log(chalk.gray('  Multi-line: end line with \\ or wrap in ```\n'));
+
+  // ★ 全局错误处理
+  process.on('uncaughtException', async (error) => {
+    await debugError('Uncaught exception', error, verbose);
+    console.error(chalk.red(`\n  [FATAL] ${error instanceof Error ? error.message : String(error)}`));
+    if (verbose && error instanceof Error && error.stack) {
+      console.error(chalk.red(error.stack));
+    }
+  });
+
+  process.on('unhandledRejection', async (reason) => {
+    await debugError('Unhandled rejection', reason, verbose);
+    console.error(chalk.red(`\n  [FATAL] Unhandled rejection: ${String(reason)}`));
+  });
+
+  // ★ 同步退出日志
+  const LOG_FILE = join(homedir(), '.claude-mvp', 'debug.log');
+  process.on('exit', (code) => {
+    try {
+      writeFileSync(LOG_FILE, `\n[${new Date().toISOString()}] PROCESS EXIT: code=${code}\n`, { flag: 'a' });
+    } catch { /* 无法写日志 */ }
+  });
+  process.on('SIGTERM', () => {
+    try {
+      writeFileSync(LOG_FILE, `\n[${new Date().toISOString()}] PROCESS SIGTERM received\n`, { flag: 'a' });
+    } catch { /* 无法写日志 */ }
+  });
+
+  // ★ 上下文压缩
+  async function tryAutoCompact(): Promise<boolean> {
+    if (!shouldCompact(messages)) return false;
+    log.compact(`上下文接近上限 (估算 ${estimateTokens(messages)} tokens)，开始压缩...`);
+    try {
+      const result = await compactMessages(client, messages, { model: options.model });
+      messages.length = 0;
+      messages.push(...result.messages);
+      log.compact(`压缩完成: ${result.tokensBefore} → ${result.tokensAfter} tokens (${messages.length} 条消息)`);
+      await debugLog(`COMPACT: ${result.tokensBefore} → ${result.tokensAfter} tokens`);
+      return true;
+    } catch (error) {
+      await debugError('Compact failed', error, verbose);
+      console.error(chalk.red('  [COMPACT] 压缩失败，继续使用完整上下文'));
+      return false;
+    }
+  }
 
   let isProcessing = false;
 
-  rl.prompt();
+  // ★ 多行输入状态
+  let multilineMode: 'off' | 'backslash' | 'codeblock' = 'off';
+  let multilineBuffer: string[] = [];
 
-  rl.on('line', async (line) => {
-    if (isProcessing) return;
-    const input = line.trim();
-    if (!input) { rl.prompt(); return; }
+  // ★ 粘贴检测：50ms 缓冲，多行快速到达时自动合并
+  let lineBuffer: string[] = [];
+  let lineTimer: ReturnType<typeof setTimeout> | null = null;
+  const PASTE_BUFFER_MS = 50;
+
+  function getPrompt(): string {
+    if (multilineMode !== 'off') return chalk.gray('| ');
+    return chalk.cyan('> ');
+  }
+
+  function resetMultiline(): void {
+    multilineMode = 'off';
+    multilineBuffer = [];
+    rl.setPrompt(getPrompt());
+  }
+
+  // ★ 处理缓冲后的行（单行或多行）
+  async function handleLines(lines: string[]): Promise<void> {
+    // === 多行模式处理 ===
+    if (multilineMode !== 'off') {
+      if (multilineMode === 'codeblock') {
+        multilineBuffer.push(...lines);
+        // 检测 closing ```（在所有行中查找）
+        const closingIdx = lines.findIndex(l => l.trim() === '```');
+        if (closingIdx !== -1) {
+          // 只保留到 closing ``` 为止
+          const extraLines = lines.slice(closingIdx + 1);
+          multilineBuffer = multilineBuffer.slice(0, multilineBuffer.length - lines.length + closingIdx + 1);
+          const input = multilineBuffer.join('\n');
+          resetMultiline();
+          await processInput(input);
+          // 如果 closing ``` 后面还有行，递归处理
+          if (extraLines.length > 0) {
+            await handleLines(extraLines);
+          }
+        }
+        return;
+      }
+
+      if (multilineMode === 'backslash') {
+        for (const l of lines) {
+          if (l.trim() === '') {
+            // 空行结束多行输入
+            const input = multilineBuffer.join('\n');
+            resetMultiline();
+            await processInput(input);
+            // 后续行作为新输入处理
+            const remaining = lines.slice(lines.indexOf(l) + 1);
+            if (remaining.length > 0) {
+              await handleLines(remaining);
+            }
+            return;
+          }
+          multilineBuffer.push(l);
+        }
+        rl.prompt();
+        return;
+      }
+    }
+
+    // === 单行模式 ===
+
+    // 粘贴检测：多行快速到达 → 合并为一条消息发送
+    if (lines.length > 1) {
+      const input = lines.join('\n');
+      await processInput(input);
+      return;
+    }
+
+    const rawLine = lines[0];
+    const line = rawLine.trim();
+
+    // 空行 → 跳过
+    if (!line) { try { rl.prompt(); } catch { /* stdin closed */ } return; }
 
     // 斜杠命令
-    if (input === '/quit' || input === '/exit') { rl.close(); permRl.close(); return; }
-    if (input === '/help') {
-      console.log(chalk.gray('  /help  /quit  /clear  /cost'));
+    if (line === '/quit' || line === '/exit') {
+      // ★ 退出前保存会话
+      if (messages.length > 0) {
+        try {
+          const sessionId = await saveSession(messages, process.cwd());
+          if (verbose) console.log(chalk.gray(`  Session saved: ${sessionId}`));
+        } catch (e) {
+          if (verbose) console.log(chalk.gray(`  Session save failed: ${e}`));
+        }
+      }
+      rl.close(); permRl.close(); return;
+    }
+    if (line === '/help') {
+      console.log(chalk.gray('  /help  /quit  /clear  /cost  /history  /compact  /skills'));
+      console.log(chalk.gray('  Multi-line: paste directly, end line with \\, or wrap in ``` '));
       rl.prompt(); return;
     }
-    if (input === '/clear') {
+    if (line === '/clear') {
       messages.length = 0;
       console.log(chalk.gray('  History cleared.'));
       rl.prompt(); return;
     }
-    if (input === '/cost') {
+    if (line === '/cost') {
       const t = costTracker.getTotals();
       console.log(renderCostInfo(t.inputTokens, t.outputTokens, t.cost));
       rl.prompt(); return;
     }
+    if (line === '/history') {
+      const entries = await getHistory(10);
+      if (entries.length === 0) {
+        console.log(chalk.gray('  No history yet.'));
+      } else {
+        console.log(chalk.gray('  Recent conversations:'));
+        for (const e of entries) {
+          const date = new Date(e.timestamp).toLocaleString();
+          const tokens = e.inputTokens + e.outputTokens;
+          console.log(chalk.gray(`  [${date}] ${e.display} (${tokens} tokens)`));
+        }
+      }
+      rl.prompt(); return;
+    }
+    if (line === '/compact') {
+      await tryAutoCompact();
+      rl.prompt(); return;
+    }
+    if (line === '/skills') {
+      const skills = options.skills;
+      if (!skills || skills.length === 0) {
+        console.log(chalk.gray('  No skills found. Place skills in .claude/skills/<name>/SKILL.md'));
+      } else {
+        console.log(chalk.gray(`  Available skills (${skills.length}):`));
+        for (const s of skills) {
+          const desc = s.description.length > 60 ? s.description.slice(0, 60) + '...' : s.description;
+          console.log(chalk.cyan(`  ${s.name}`) + chalk.gray(` v${s.version}`) + ` — ${desc}`);
+          console.log(chalk.gray(`    Command: python ${s.skillDir}/${s.entryPoint} "<args>"`));
+        }
+      }
+      rl.prompt(); return;
+    }
 
-    // 发送消息
+    // === 检测多行输入触发 ===
+
+    // 代码块模式：行以 ``` 开头
+    if (line.trimStart().startsWith('```')) {
+      multilineMode = 'codeblock';
+      multilineBuffer = [rawLine];
+      rl.setPrompt(getPrompt());
+      rl.prompt();
+      return;
+    }
+
+    // 反斜杠续行模式：行以 \ 结尾
+    if (line.endsWith('\\')) {
+      multilineMode = 'backslash';
+      multilineBuffer = [line.slice(0, -1)]; // 去掉末尾的 \
+      rl.setPrompt(getPrompt());
+      rl.prompt();
+      return;
+    }
+
+    // 普通单行 → 直接发送
+    await processInput(line);
+  }
+
+  rl.prompt();
+
+  // ★ 核心 line 处理（带粘贴检测缓冲）
+  rl.on('line', async (rawLine) => {
+    if (isProcessing) return;
+
+    // 缓冲输入行，等待 50ms 确认没有更多行到来（粘贴检测）
+    lineBuffer.push(rawLine);
+
+    if (lineTimer) clearTimeout(lineTimer);
+    lineTimer = setTimeout(async () => {
+      lineTimer = null;
+      const lines = [...lineBuffer];
+      lineBuffer = [];
+      await handleLines(lines);
+    }, PASTE_BUFFER_MS);
+  });
+
+  // ★ 处理用户输入（单行或多行合并后的完整输入）
+  async function processInput(input: string): Promise<void> {
     messages.push({ role: 'user', content: input });
     isProcessing = true;
     rl.pause();
 
-    log.msg(`用户输入: "${input}"`);
+    log.msg(`用户输入: "${input.slice(0, 100)}${input.length > 100 ? '...' : ''}"`);
     log.msg(`当前 messages 数量: ${messages.length}`);
+    debugLog(`User input: "${input.slice(0, 100)}" (messages: ${messages.length})`, verbose);
+
+    // ★ 发送前检查是否需要自动压缩
+    await tryAutoCompact();
 
     const abortController = new AbortController();
     const onInterrupt = () => { abortController.abort(); };
@@ -146,12 +370,19 @@ export async function startRepl(
 
       const t = costTracker.getTotals();
       console.log(renderCostInfo(t.inputTokens, t.outputTokens, t.cost));
+      debugLog(`Response done: text=${currentText.length}chars, tokens=${t.inputTokens}in/${t.outputTokens}out`, verbose);
+
+      addToHistory(input, process.cwd(), t.inputTokens, t.outputTokens);
     } catch (error) {
+      debugError('QueryLoop error', error, verbose);
       console.error(chalk.red(`\n  Error: ${error instanceof Error ? error.message : String(error)}`));
+      if (verbose && error instanceof Error && error.stack) {
+        console.error(chalk.gray(error.stack));
+      }
     }
 
     process.off('SIGINT', onInterrupt);
     isProcessing = false;
     try { rl.resume(); rl.prompt(); } catch { /* stdin 已关闭 */ }
-  });
+  }
 }

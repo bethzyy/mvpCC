@@ -5,6 +5,7 @@ import type {
 } from '../types.js';
 import { streamMessages } from '../api/stream.js';
 import { executeTool } from './toolRunner.js';
+import { debugLog, debugError } from '../utils/debugLogger.js';
 
 export interface QueryLoopOptions {
   client: Anthropic;
@@ -39,10 +40,12 @@ export async function* queryLoop(
     if (++turnCount > maxTurns) return { reason: 'max_turns' };
 
     onTurnStart?.(turnCount, messages.length);
+    await debugLog(`Turn ${turnCount} start (messages: ${messages.length})`);
 
     // ★ 原始代码的 needsFollowUp 标志 (第 376 行)
     let needsFollowUp = false;
     const toolUseBlocks: ToolUseBlock[] = [];
+    const parseFailedIds = new Set<string>();
     let currentText = '';
 
     // ① 调用 API 并处理流事件
@@ -70,6 +73,9 @@ export async function* queryLoop(
           const block = toolUseBlocks.find(b => b.id === event.id);
           if (block) {
             block.input = event.input;
+            if (event.parseFailed) {
+              parseFailedIds.add(event.id);
+            }
           }
           break;
 
@@ -89,6 +95,7 @@ export async function* queryLoop(
 
     // ② ★ 关键判断: 用 needsFollowUp 而不是 stop_reason
     onTurnEnd?.(turnCount, needsFollowUp ? 'continue' : 'done', toolUseBlocks.length, currentText.length);
+    await debugLog(`Turn ${turnCount} end: reason=${needsFollowUp ? 'continue' : 'done'}, tools=${toolUseBlocks.length}, text=${currentText.length}chars`);
 
     if (!needsFollowUp) {
       if (currentText) {
@@ -111,6 +118,21 @@ export async function* queryLoop(
     // ④ 逐个执行工具
     const toolResults: ToolResultBlock[] = [];
     for (const toolUse of toolUseBlocks) {
+      await debugLog(`Executing tool: ${toolUse.name} (id: ${toolUse.id.slice(0, 12)}...)`);
+      // ★ JSON 解析失败：跳过执行，返回明确错误提示
+      if (parseFailedIds.has(toolUse.id)) {
+        const errMsg = `Tool input JSON was truncated (content too long for max_tokens). Try writing smaller chunks or use BashTool with heredoc: echo "content" > file`;
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          content: errMsg,
+          is_error: true,
+        });
+        onToolResult?.(turnCount, toolUse.name, 'JSON parse failed (truncated)', true);
+        await debugLog(`Skip tool ${toolUse.name}: JSON parse failed (input too large)`);
+        continue;
+      }
+
       const tool = tools.find(t => t.name === toolUse.name);
       if (!tool) {
         toolResults.push({

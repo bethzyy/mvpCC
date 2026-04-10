@@ -50,6 +50,7 @@ export interface StreamToolUseEnd {
   id: string;
   name: string;
   input: Record<string, unknown>;
+  parseFailed?: boolean;
 }
 
 export type StopReason = 'end_turn' | 'tool_use' | 'max_tokens' | 'stop_sequence';
@@ -67,7 +68,7 @@ export interface StreamUsage {
 
 export interface StreamError {
   type: 'error';
-  error: Error;
+  error: { type: string; message: string };
 }
 
 export type StreamEvent =

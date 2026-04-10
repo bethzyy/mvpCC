@@ -1,8 +1,27 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { existsSync } from 'fs';
 import type { ToolDefinition, PermissionResult } from '../types.js';
 
 const execAsync = promisify(exec);
+
+// Windows 上 shell: 'bash' 会解析到 WSL，需要用 Git Bash
+function resolveShell(): string | undefined {
+  // 优先使用环境变量（Git Bash 终端会设置 SHELL）
+  if (process.env.SHELL) return process.env.SHELL;
+  if (process.platform !== 'win32') return undefined;
+  // 按常见路径检测 Git Bash
+  const candidates = [
+    'C:\\Program Files\\Git\\bin\\bash.exe',
+    'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
+    process.env.ProgramFiles && `${process.env.ProgramFiles}\\Git\\bin\\bash.exe`,
+    process.env['ProgramFiles(x86)'] && `${process.env['ProgramFiles(x86)']}\\Git\\bin\\bash.exe`,
+  ];
+  for (const p of candidates) {
+    if (p && existsSync(p)) return p;
+  }
+  return undefined; // 找不到则用系统默认 shell
+}
 
 // 只读命令白名单 (从原始 BashTool/readOnlyValidation.ts 提取)
 const READONLY_COMMANDS = new Set([
@@ -60,11 +79,13 @@ Prefer dedicated tools: FileRead (not cat), FileEdit (not sed), Glob (not find),
   async call(input) {
     const command = input.command as string;
     const timeout = Math.min((input.timeout as number) || 120_000, 600_000);
+    const shell = resolveShell();
 
     try {
       const { stdout, stderr } = await execAsync(command, {
         timeout,
         maxBuffer: 10 * 1024 * 1024, // 10MB
+        shell,
       });
       const output = [stdout, stderr].filter(Boolean).join('\n');
       return { output: output || '(no output)' };

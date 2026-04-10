@@ -70,12 +70,157 @@
   ↓
 阶段 6  成本追踪 + 会话历史
   ↓
-阶段 7  CLI 入口 (Commander.js)  ← 完整 MVP
+阶段 7  CLI 入口 (Commander.js)  ← 基础 MVP 完成
   ↓
-阶段 8  (可选) Debug Logger + Web 仪表盘
+阶段 8  测试体系 + Verbose 增强 ← 测试教学增强
+  ↓
+阶段 9  上下文压缩 + 多行输入 ← 实用性增强
+  ↓
+阶段 10 会话恢复 ← 实用性增强
+  ↓
+阶段 11 Debug Logger + Web 仪表盘 ← 可视化教学
 ```
 
 **带 ★ 的阶段是可运行里程碑**，完成后有 demo 脚本可以直接运行验证。
+
+---
+
+## 已完成的阶段
+
+| 阶段 | 内容 | 状态 |
+|------|------|------|
+| 0 | 项目骨架 + types.ts | ✅ |
+| 1 | API 客户端 + 流式调用 | ✅ |
+| 1.5 | demo-chat 验证 | ✅ |
+| 2 | queryLoop + toolRunner | ✅ |
+| 2.5 | demo-loop 验证 | ✅ |
+| 3 | 5 个核心工具 + registry | ✅ |
+| 4 | 系统提示 + Git 上下文 | ✅ |
+| 5 | REPL 终端 UI | ✅ |
+| 6 | 成本追踪 + 会话历史 | ✅ |
+| 7 | CLI 入口 (Commander.js) | ✅ |
+| 8 | 测试体系 (48 个测试) + Verbose 增强 | ✅ |
+
+## 待实现的阶段
+
+### 阶段 9：上下文压缩 + 多行输入
+
+**源码参考**: `src/utils/context.ts` (auto-compact), `src/screens/REPL/InputBox.tsx` (多行编辑器)
+
+**目标**: 解决长对话 token 溢出和代码粘贴受限的问题。
+
+**9.1 上下文压缩（auto-compact）**
+
+当 messages 的 token 数接近模型上限时，自动将早期消息摘要压缩：
+
+- 新增 `src/context/compactor.ts`
+- 跟踪每轮对话的 token 消耗（通过 usage 事件）
+- 当总 token 超过阈值（如 80%）时，调用 LLM 摘要前 N 条消息
+- 用摘要替换原始消息，保留最近 K 条完整消息
+- verbose 日志中显示压缩事件：`[COMPACT] 摘要了 15 条旧消息 (4523 → 312 tokens)`
+
+**9.2 多行输入**
+
+支持粘贴多行代码块和编辑器模式：
+
+- 检测输入是否以换行结尾，若是则进入多行模式
+- 多行模式下连续输入直到输入空行（连续两次回车）结束
+- 替代方案：`/editor` 命令调用系统编辑器（`$EDITOR` 或内置简单编辑器）
+
+**验证**:
+- 长对话（20+ 轮）后 token 消耗仍可控
+- 粘贴多行代码块能正确发送
+- `/editor` 命令能打开编辑器输入
+
+---
+
+### 阶段 10：会话恢复
+
+**源码参考**: `src/utils/storage.ts` (会话持久化), `src/utils/Session.ts` (会话管理)
+
+**目标**: 退出 CLI 后再启动，能恢复上次的对话上下文。
+
+**实现**:
+- 新增 `src/context/session.ts`
+- 会话结束时将 messages 数组序列化为 JSON 存储到 `~/.claude-mvp/sessions/`
+- 启动时检测最近的会话文件，提示用户是否恢复
+- CLI 参数：`--resume` 恢复上次会话，`--continue` 从上次中断处继续
+- 会话文件命名：`session-{timestamp}.json`
+
+**验证**:
+- 进行几轮对话后 `/quit` 退出
+- 再次启动时提示 `Found recent session. Resume? (y/n)`
+- 选择恢复后，上下文完整保留
+
+---
+
+### 阶段 11：Debug Logger + Web 仪表盘
+
+**本项目原创功能**（原始 Claude Code 没有可视化界面，只有 JSONL 日志）
+
+**目标**: 在浏览器中实时观察 Agentic Loop 的完整运作过程。
+
+**11.1 Debug Logger 核心日志系统**
+
+- 新增 `src/debug/logger.ts`
+- 全局 Logger 单例，所有模块调用 `logger.log(turn, phase, type, detail)`
+- 日志同时写入文件 `~/.claude-mvp/debug.log`（JSONL 格式）
+- 支持可选的 WebSocket 推送
+
+**11.2 Web 仪表盘**
+
+- 新增 `src/debug/dashboard.ts`
+- 启动 HTTP 服务器（默认端口 3334）
+- 内嵌 HTML 页面，通过 WebSocket 实时接收日志
+- 左侧侧边栏按 Turn 分组，右侧实时滚动日志流
+- 每条日志有颜色编码：API 请求(紫)、工具调用(黄)、工具结果(橙)、循环控制(青)
+
+**CLI 集成**:
+```
+npm run dev -- --dashboard    # 启动 CLI + 仪表盘
+# 仪表盘地址: http://localhost:3334
+```
+
+**验证**:
+- 启动 `--dashboard` 后浏览器能看到实时日志流
+- 进行一轮工具调用，日志中完整显示 Turn 1 → Turn 2 的全过程
+- 关闭 CLI 后日志文件仍可在 `~/.claude-mvp/debug.log` 查看
+
+---
+
+### 阶段 12：Skill 调用系统
+
+**源码参考**: 原始 Claude Code 的 skill 系统位于 `src/services/skills/`，通过 `SKILL.md` 描述文件 + Python/Node 入口脚本实现。
+
+**目标**: 让模型能发现和调用项目中 `.claude/skills/` 下的技能脚本。
+
+**12.1 Skill 发现与注册**
+
+- 新增 `src/skills/discovery.ts`
+- 扫描工作目录下 `.claude/skills/*/SKILL.md` 文件
+- 解析 SKILL.md 提取：名称、描述、触发模式（trigger patterns）、入口脚本路径
+- 将可用 skill 作为工具描述注入 systemPrompt（不注册为 ToolDefinition，而是通过提示词让模型用 BashTool 调用）
+
+**12.2 Skill 调用流程**
+
+模型通过 BashTool 间接调用 skill：
+```
+模型决策 → BashTool("python .claude/skills/free-search/main.py '搜索内容'") → 执行 → 返回结果
+```
+
+- systemPrompt 中注入 skill 列表和使用说明
+- 模型根据用户意图自动选择合适的 skill
+- skill 的输入输出通过 BashTool 的 stdout/stderr 传递
+
+**12.3 Skill 列表斜杠命令**
+
+- 新增 `/skills` 命令，列出当前可用的所有 skill
+- 显示每个 skill 的名称、描述、触发关键词
+
+**验证**:
+- `/skills` 命令能列出 `.claude/skills/` 下所有已安装的 skill
+- 用户输入匹配 skill 触发词时，模型自动调用对应 skill
+- skill 执行结果正确返回给模型，模型能基于结果继续对话
 
 ---
 

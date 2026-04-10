@@ -1,4 +1,5 @@
-import { readFile, writeFile } from 'fs/promises';
+import { readFile, writeFile, mkdir } from 'fs/promises';
+import { dirname } from 'path';
 import type { ToolDefinition, PermissionResult } from '../types.js';
 
 export const FileEditTool: ToolDefinition = {
@@ -34,6 +35,7 @@ Prefer this over creating new files.`,
     const replaceAll = input.replace_all as boolean;
 
     try {
+      await mkdir(dirname(filePath), { recursive: true });
       let content = await readFile(filePath, 'utf-8');
 
       if (!content.includes(oldStr)) {
