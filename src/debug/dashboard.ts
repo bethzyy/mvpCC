@@ -14,6 +14,7 @@ export interface LogEntry {
 let wss: WebSocketServer | null = null;
 let httpServer: ReturnType<typeof createServer> | null = null;
 let clients: Set<WebSocket> = new Set();
+let cleanupInterval: ReturnType<typeof setInterval> | null = null;
 
 // 类型颜色映射（用于仪表盘显示）
 const TYPE_COLORS: Record<string, string> = {
@@ -41,6 +42,24 @@ export function startDashboard(port = 3334): (entry: LogEntry) => void {
   wss.on('connection', (ws) => {
     clients.add(ws);
     ws.on('close', () => clients.delete(ws));
+    ws.on('error', () => clients.delete(ws));
+  });
+
+  // 定期清理断开的 WebSocket 连接（防止内存泄漏）
+  cleanupInterval = setInterval(() => {
+    for (const client of clients) {
+      if (client.readyState !== WebSocket.OPEN && client.readyState !== WebSocket.CONNECTING) {
+        clients.delete(client);
+      }
+    }
+  }, 30_000);
+
+  server.on('error', (err: any) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`  Dashboard: Port ${port} already in use`);
+    } else {
+      console.error(`  Dashboard: Server error - ${err.message}`);
+    }
   });
 
   server.listen(port, () => {
@@ -53,7 +72,11 @@ export function startDashboard(port = 3334): (entry: LogEntry) => void {
     const data = JSON.stringify(entry);
     for (const client of clients) {
       if (client.readyState === WebSocket.OPEN) {
-        client.send(data);
+        try {
+          client.send(data);
+        } catch {
+          clients.delete(client);
+        }
       }
     }
   };
@@ -64,8 +87,14 @@ export function startDashboard(port = 3334): (entry: LogEntry) => void {
  */
 export function stopDashboard(): Promise<void> {
   return new Promise((resolve) => {
+    if (cleanupInterval) {
+      clearInterval(cleanupInterval);
+      cleanupInterval = null;
+    }
     if (wss) {
-      for (const client of clients) client.close();
+      for (const client of clients) {
+        try { client.close(1000, 'Server shutdown'); } catch { /* already closed */ }
+      }
       wss.close(() => {
         wss = null;
         clients = new Set();

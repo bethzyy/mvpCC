@@ -34,11 +34,17 @@ Automatically creates parent directories.`,
     const filePath = input.file_path as string;
     const content = input.content as string;
 
+    if (typeof filePath !== 'string' || filePath.includes('\0')) {
+      return { output: 'Error: Invalid file path (null byte detected)', isError: true };
+    }
+
     try {
       await mkdir(dirname(filePath), { recursive: true });
       await writeFile(filePath, content, 'utf-8');
       return { output: `File written: ${filePath}` };
     } catch (error: any) {
+      if (error.code === 'EACCES') return { output: `Permission denied: ${filePath}`, isError: true };
+      if (error.code === 'ENOSPC') return { output: 'No space left on device', isError: true };
       return { output: `Error: ${error.message}`, isError: true };
     }
   },

@@ -3,30 +3,30 @@ import type { ConversationMessage } from '../types.js';
 
 // 原始代码: src/services/compact/autoCompact.ts
 // AUTOCOMPACT_BUFFER_TOKENS = 13_000
-const DEFAULT_CONTEXT_WINDOW = 128_000;
-const AUTOCOMPACT_BUFFER = 13_000;
+const DEFAULT_CONTEXT_WINDOW = parseInt(process.env.CLAUDE_CONTEXT_WINDOW || '') || 128_000;
+const AUTOCOMPACT_BUFFER = parseInt(process.env.CLAUDE_COMPACT_BUFFER || '') || 13_000;
 const DEFAULT_KEEP_RECENT = 10;
 
 /**
  * 粗略估算 messages 的 token 数
- * 原始代码使用 tiktoken 精确计算，MVP 用字符数 / 4 近似
+ * 原始代码使用 tiktoken 精确计算，MVP 用 Buffer.byteLength / 3.5 近似（支持 UTF-8 中文）
  */
 export function estimateTokens(messages: ConversationMessage[]): number {
-  let totalChars = 0;
+  let totalBytes = 0;
   for (const msg of messages) {
     if (typeof msg.content === 'string') {
-      totalChars += msg.content.length;
+      totalBytes += Buffer.byteLength(msg.content, 'utf-8');
     } else {
       for (const block of msg.content) {
-        if (block.type === 'text') totalChars += block.text.length;
-        else if (block.type === 'tool_use') totalChars += JSON.stringify(block.input).length + block.name.length;
-        else if (block.type === 'tool_result') totalChars += block.content.length;
+        if (block.type === 'text') totalBytes += Buffer.byteLength(block.text, 'utf-8');
+        else if (block.type === 'tool_use') totalBytes += Buffer.byteLength(JSON.stringify(block.input), 'utf-8') + Buffer.byteLength(block.name, 'utf-8');
+        else if (block.type === 'tool_result') totalBytes += Buffer.byteLength(block.content, 'utf-8');
       }
     }
-    // 每条消息的元数据开销（role、格式等）约 20 tokens ≈ 80 chars
-    totalChars += 80;
+    // 每条消息的元数据开销（role、格式等）约 20 tokens ≈ 70 bytes
+    totalBytes += 70;
   }
-  return Math.ceil(totalChars / 4);
+  return Math.ceil(totalBytes / 3.5);
 }
 
 /**

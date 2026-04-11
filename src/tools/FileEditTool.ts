@@ -34,6 +34,10 @@ Prefer this over creating new files.`,
     const newStr = input.new_string as string;
     const replaceAll = input.replace_all as boolean;
 
+    if (typeof filePath !== 'string' || filePath.includes('\0')) {
+      return { output: 'Error: Invalid file path (null byte detected)', isError: true };
+    }
+
     try {
       await mkdir(dirname(filePath), { recursive: true });
       let content = await readFile(filePath, 'utf-8');
@@ -58,6 +62,8 @@ Prefer this over creating new files.`,
       await writeFile(filePath, content, 'utf-8');
       return { output: `File updated: ${filePath}` };
     } catch (error: any) {
+      if (error.code === 'EACCES') return { output: `Permission denied: ${filePath}`, isError: true };
+      if (error.code === 'ENOSPC') return { output: 'No space left on device', isError: true };
       return { output: `Error: ${error.message}`, isError: true };
     }
   },

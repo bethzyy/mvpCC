@@ -124,6 +124,7 @@ export async function startRepl(
   }
 
   let isProcessing = false;
+  let shuttingDown = false;
 
   // ★ 多行输入状态
   let multilineMode: 'off' | 'backslash' | 'codeblock' = 'off';
@@ -132,6 +133,7 @@ export async function startRepl(
   // ★ 粘贴检测：50ms 缓冲，多行快速到达时自动合并
   let lineBuffer: string[] = [];
   let lineTimer: ReturnType<typeof setTimeout> | null = null;
+  let pasteLock = false;
   const PASTE_BUFFER_MS = 50;
 
   function getPrompt(): string {
@@ -206,16 +208,8 @@ export async function startRepl(
 
     // 斜杠命令
     if (line === '/quit' || line === '/exit') {
-      // ★ 退出前保存会话
-      if (messages.length > 0) {
-        try {
-          const sessionId = await saveSession(messages, process.cwd());
-          if (verbose) console.log(chalk.gray(`  Session saved: ${sessionId}`));
-        } catch (e) {
-          if (verbose) console.log(chalk.gray(`  Session save failed: ${e}`));
-        }
-      }
-      rl.close(); permRl.close(); return;
+      await gracefulShutdown();
+      return;
     }
     if (line === '/help') {
       console.log(chalk.gray('  /help  /quit  /clear  /cost  /history  /compact  /skills'));
@@ -291,19 +285,50 @@ export async function startRepl(
 
   rl.prompt();
 
+  // ★ 优雅关停：保存会话 + 清理资源
+  async function gracefulShutdown(): Promise<void> {
+    if (shuttingDown) return;
+    shuttingDown = true;
+
+    // 清理粘贴检测定时器
+    if (lineTimer) { clearTimeout(lineTimer); lineTimer = null; }
+
+    // 保存会话
+    if (messages.length > 0) {
+      try {
+        const sessionId = await saveSession(messages, process.cwd());
+        console.log(chalk.gray(`  Session saved: ${sessionId}`));
+      } catch (e) {
+        console.log(chalk.gray(`  Session save failed: ${e}`));
+      }
+    }
+
+    // 关闭 readline
+    try { permRl.close(); } catch { /* already closed */ }
+    try { rl.close(); } catch { /* already closed */ }
+
+    process.exit(0);
+  }
+
   // ★ 核心 line 处理（带粘贴检测缓冲）
   rl.on('line', async (rawLine) => {
-    if (isProcessing) return;
+    if (isProcessing || shuttingDown) return;
 
     // 缓冲输入行，等待 50ms 确认没有更多行到来（粘贴检测）
     lineBuffer.push(rawLine);
 
     if (lineTimer) clearTimeout(lineTimer);
     lineTimer = setTimeout(async () => {
-      lineTimer = null;
-      const lines = [...lineBuffer];
-      lineBuffer = [];
-      await handleLines(lines);
+      if (pasteLock) return;
+      pasteLock = true;
+      try {
+        lineTimer = null;
+        const lines = [...lineBuffer];
+        lineBuffer = [];
+        await handleLines(lines);
+      } finally {
+        pasteLock = false;
+      }
     }, PASTE_BUFFER_MS);
   });
 

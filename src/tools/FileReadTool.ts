@@ -20,13 +20,18 @@ Supports offset and limit for large files. Default max 2000 lines.`,
 
   async call(input) {
     const filePath = input.file_path as string;
+
+    // 安全检查: 空字节注入
+    if (typeof filePath !== 'string' || filePath.includes('\0')) {
+      return { output: 'Error: Invalid file path (null byte detected)', isError: true };
+    }
+
     try {
       const content = await readFile(filePath, 'utf-8');
       const lines = content.split('\n');
 
-      // 行号格式化 (cat -n 风格)
-      const offset = (input.offset as number) || 0;
-      const limit = Math.min((input.limit as number) || 2000, lines.length - offset);
+      const offset = typeof input.offset === 'number' ? input.offset : 0;
+      const limit = Math.min(typeof input.limit === 'number' ? input.limit : 2000, lines.length - offset);
       const selected = lines.slice(offset, offset + limit);
 
       const numbered = selected

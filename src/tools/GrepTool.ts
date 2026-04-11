@@ -47,6 +47,7 @@ Supports output modes: content (default), files_with_matches, count.`,
 
       const { stdout } = await execFileAsync('rg', args, {
         maxBuffer: 10 * 1024 * 1024,
+        timeout: 30_000,
       });
       return { output: stdout };
     } catch (rgError: any) {

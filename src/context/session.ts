@@ -78,10 +78,21 @@ export async function listSessions(): Promise<SessionMeta[]> {
  * 按 ID 加载会话的 messages
  */
 export async function loadSession(id: string): Promise<ConversationMessage[] | null> {
+  // 会话 ID 安全校验: 只允许字母数字和连字符
+  if (!/^[a-zA-Z0-9-]+$/.test(id)) {
+    return null;
+  }
+
   const filePath = join(SESSIONS_DIR, `${id}.json`);
   try {
     const content = await readFile(filePath, 'utf-8');
-    const data: SessionData = JSON.parse(content);
+    const data = JSON.parse(content);
+
+    // 校验会话数据结构
+    if (!data || !Array.isArray(data.messages)) {
+      return null;
+    }
+
     return data.messages;
   } catch {
     return null;
@@ -94,4 +105,30 @@ export async function loadSession(id: string): Promise<ConversationMessage[] | n
 export async function getLatestSessionId(): Promise<string | null> {
   const sessions = await listSessions();
   return sessions.length > 0 ? sessions[0].id : null;
+}
+
+/**
+ * 清理过期会话文件
+ */
+export async function cleanupSessions(maxAgeDays = 30): Promise<number> {
+  await ensureSessionsDir();
+  const files = await readdir(SESSIONS_DIR);
+  const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
+  let cleaned = 0;
+
+  for (const file of files) {
+    if (!file.endsWith('.json')) continue;
+    try {
+      const filePath = join(SESSIONS_DIR, file);
+      const { stat } = await import('fs/promises');
+      const stats = await stat(filePath);
+      if (stats.mtimeMs < cutoff) {
+        const { unlink } = await import('fs/promises');
+        await unlink(filePath);
+        cleaned++;
+      }
+    } catch { /* skip */ }
+  }
+
+  return cleaned;
 }

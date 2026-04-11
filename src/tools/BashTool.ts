@@ -78,7 +78,15 @@ Prefer dedicated tools: FileRead (not cat), FileEdit (not sed), Glob (not find),
 
   async call(input) {
     const command = input.command as string;
-    const timeout = Math.min((input.timeout as number) || 120_000, 600_000);
+
+    // 安全检查: 空字节注入
+    if (typeof command !== 'string' || command.includes('\0')) {
+      return { output: 'Error: Invalid command (null byte detected)', isError: true };
+    }
+
+    const DEFAULT_TIMEOUT_MS = 120_000;
+    const MAX_TIMEOUT_MS = 600_000;
+    const timeout = Math.min(typeof input.timeout === 'number' ? input.timeout : DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
     const shell = resolveShell();
 
     try {

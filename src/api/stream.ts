@@ -106,6 +106,16 @@ export async function* streamMessages(
             if (acc.inputJson) {
               try {
                 parsedInput = JSON.parse(acc.inputJson);
+                // 防护原型污染: 用 Object.assign 创建干净副本，忽略危险属性
+                if (parsedInput && typeof parsedInput === 'object') {
+                  const clean: Record<string, unknown> = {};
+                  for (const [key, value] of Object.entries(parsedInput)) {
+                    if (key !== '__proto__' && key !== 'constructor' && key !== 'prototype') {
+                      clean[key] = value;
+                    }
+                  }
+                  parsedInput = clean;
+                }
               } catch {
                 parseFailed = true;
                 await debugLog(`WARN: JSON parse failed for tool ${acc.name}, input length=${acc.inputJson.length}`);
