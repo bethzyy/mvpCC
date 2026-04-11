@@ -107,4 +107,5 @@ export interface ToolDefinition {
 
 export interface QueryResult {
   reason: 'completed' | 'aborted' | 'max_turns';
+  messages?: ConversationMessage[];  // ★ 更新后的消息列表（含 assistant 回复和工具结果）
 }

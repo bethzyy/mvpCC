@@ -30,8 +30,8 @@ export async function* queryLoop(
     onTurnStart, onTurnEnd, onToolResult,
   } = options;
 
-  // ★ 可变消息列表 — 每轮循环都会追加
-  let messages: ConversationMessage[] = [...initialMessages];
+  // ★ 直接使用传入的消息数组（不创建副本），确保 repl.ts 能拿到更新
+  let messages: ConversationMessage[] = initialMessages;
   let turnCount = 0;
 
   // ★ 这就是原始 query.ts 的 while(true) 循环 (第 307 行)
