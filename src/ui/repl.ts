@@ -327,6 +327,21 @@ export async function startRepl(
         model: options.model,
         askPermission,
         onTurnStart: (turn, msgCount) => log.turn(turn, `--- Turn ${turn} 开始 | messages: ${msgCount} ---`),
+        onTurnMessages: (turn, msgs) => {
+          if (!verbose) return;
+          for (let i = 0; i < msgs.length; i++) {
+            const msg = msgs[i];
+            const preview = typeof msg.content === 'string'
+              ? msg.content.slice(0, 120)
+              : msg.content.map((b: any) => {
+                  if (b.type === 'text') return `text:${b.text.slice(0, 80)}`;
+                  if (b.type === 'tool_use') return `tool_use:${b.name}`;
+                  if (b.type === 'tool_result') return `tool_result:${b.content.slice(0, 60)}`;
+                  return b.type;
+                }).join(' | ');
+            console.log(chalk.gray(`  [MSG] [${i}] ${msg.role}: ${preview}${preview.length >= 120 ? '...' : ''}`));
+          }
+        },
         onTurnEnd: (turn, reason, toolCount, textLen) =>
           log.turn(turn, `--- Turn ${turn} 结束 | ${reason} | 工具: ${toolCount} | 文本: ${textLen}字 ---`),
         onToolResult: (turn, name, output, isError) =>
@@ -375,11 +390,11 @@ export async function startRepl(
 
       const t = costTracker.getTotals();
       showCost(() => costTracker.getTotals());
-      debugLog(`Response done: text=${currentText.length}chars, tokens=${t.inputTokens}in/${t.outputTokens}out`, verbose);
+      await debugLog(`Response done: text=${currentText.length}chars, tokens=${t.inputTokens}in/${t.outputTokens}out`, verbose);
 
       addToHistory(input, process.cwd(), t.inputTokens, t.outputTokens);
     } catch (error) {
-      debugError('QueryLoop error', error, verbose);
+      await debugError('QueryLoop error', error, verbose);
       console.error(chalk.red(`\n  Error: ${error instanceof Error ? error.message : String(error)}`));
       if (verbose && error instanceof Error && error.stack) {
         console.error(chalk.gray(error.stack));

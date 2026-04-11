@@ -16,6 +16,7 @@ export interface QueryLoopOptions {
   maxTurns?: number;
   askPermission: (message: string) => Promise<boolean>;
   onTurnStart?: (turn: number, messageCount: number) => void;
+  onTurnMessages?: (turn: number, messages: ConversationMessage[]) => void;
   onTurnEnd?: (turn: number, reason: string, toolCount: number, textLen: number) => void;
   onToolResult?: (turn: number, name: string, output: string, isError?: boolean) => void;
 }
@@ -27,7 +28,7 @@ export async function* queryLoop(
   const {
     client, tools, systemPrompt, signal,
     model, maxTurns = 100, askPermission,
-    onTurnStart, onTurnEnd, onToolResult,
+    onTurnStart, onTurnMessages, onTurnEnd, onToolResult,
   } = options;
 
   // ★ 直接使用传入的消息数组（不创建副本），确保 repl.ts 能拿到更新
@@ -40,6 +41,7 @@ export async function* queryLoop(
     if (++turnCount > maxTurns) return { reason: 'max_turns' };
 
     onTurnStart?.(turnCount, messages.length);
+    onTurnMessages?.(turnCount, messages);
     await debugLog(`Turn ${turnCount} start (messages: ${messages.length})`);
 
     // ★ 原始代码的 needsFollowUp 标志 (第 376 行)
