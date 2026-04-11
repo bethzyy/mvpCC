@@ -29,6 +29,16 @@ program.action(async (prompt, options) => {
   if (options.apiKey) process.env.ZHIPU_API_KEY = options.apiKey;
   if (options.baseUrl) process.env.ANTHROPIC_BASE_URL = options.baseUrl;
 
+  // ★ 内存监控: 每 60s 检查，超过 500MB 输出警告
+  const MEM_THRESHOLD_MB = parseInt(process.env.CLAUDE_MEM_THRESHOLD || '') || 500;
+  const memMonitor = setInterval(() => {
+    const { heapUsed } = process.memoryUsage();
+    const usedMB = Math.round(heapUsed / 1024 / 1024);
+    if (usedMB > MEM_THRESHOLD_MB) {
+      console.error(chalk.yellow(`  [MEM] High memory usage: ${usedMB}MB (threshold: ${MEM_THRESHOLD_MB}MB)`));
+    }
+  }, 60_000);
+
   try {
     const client = createApiClient();
     const tools = getAllTools();
@@ -94,6 +104,8 @@ program.action(async (prompt, options) => {
   } catch (error) {
     console.error(chalk.red(`Fatal: ${error instanceof Error ? error.message : String(error)}`));
     process.exit(1);
+  } finally {
+    clearInterval(memMonitor);
   }
 });
 

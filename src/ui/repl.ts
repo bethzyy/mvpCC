@@ -5,9 +5,10 @@ import type { ConversationMessage, ToolDefinition, StreamEvent } from '../types.
 import { queryLoop } from '../query/queryLoop.js';
 import { buildSystemPrompt } from '../context/systemPrompt.js';
 import { getGitContext } from '../context/gitContext.js';
-import { renderToolUse, renderCostInfo } from './renderer.js';
+import { renderToolUse } from './renderer.js';
 import { CostTracker } from '../cost/tracker.js';
-import { addToHistory, getHistory } from '../history/history.js';
+import { addToHistory } from '../history/history.js';
+import { showHelp, showCost, showHistory, showSkills } from './commands.js';
 import { debugLog, debugError } from '../utils/debugLogger.js';
 import { shouldCompact, compactMessages, estimateTokens } from '../context/compactor.js';
 import { saveSession } from '../context/session.js';
@@ -211,53 +212,16 @@ export async function startRepl(
       await gracefulShutdown();
       return;
     }
-    if (line === '/help') {
-      console.log(chalk.gray('  /help  /quit  /clear  /cost  /history  /compact  /skills'));
-      console.log(chalk.gray('  Multi-line: paste directly, end line with \\, or wrap in ``` '));
-      rl.prompt(); return;
-    }
+    if (line === '/help') { showHelp(); rl.prompt(); return; }
     if (line === '/clear') {
       messages.length = 0;
       console.log(chalk.gray('  History cleared.'));
       rl.prompt(); return;
     }
-    if (line === '/cost') {
-      const t = costTracker.getTotals();
-      console.log(renderCostInfo(t.inputTokens, t.outputTokens, t.cost));
-      rl.prompt(); return;
-    }
-    if (line === '/history') {
-      const entries = await getHistory(10);
-      if (entries.length === 0) {
-        console.log(chalk.gray('  No history yet.'));
-      } else {
-        console.log(chalk.gray('  Recent conversations:'));
-        for (const e of entries) {
-          const date = new Date(e.timestamp).toLocaleString();
-          const tokens = e.inputTokens + e.outputTokens;
-          console.log(chalk.gray(`  [${date}] ${e.display} (${tokens} tokens)`));
-        }
-      }
-      rl.prompt(); return;
-    }
-    if (line === '/compact') {
-      await tryAutoCompact();
-      rl.prompt(); return;
-    }
-    if (line === '/skills') {
-      const skills = options.skills;
-      if (!skills || skills.length === 0) {
-        console.log(chalk.gray('  No skills found. Place skills in .claude/skills/<name>/SKILL.md'));
-      } else {
-        console.log(chalk.gray(`  Available skills (${skills.length}):`));
-        for (const s of skills) {
-          const desc = s.description.length > 60 ? s.description.slice(0, 60) + '...' : s.description;
-          console.log(chalk.cyan(`  ${s.name}`) + chalk.gray(` v${s.version}`) + ` — ${desc}`);
-          console.log(chalk.gray(`    Command: python ${s.skillDir}/${s.entryPoint} "<args>"`));
-        }
-      }
-      rl.prompt(); return;
-    }
+    if (line === '/cost') { showCost(() => costTracker.getTotals()); rl.prompt(); return; }
+    if (line === '/history') { await showHistory(); rl.prompt(); return; }
+    if (line === '/compact') { await tryAutoCompact(); rl.prompt(); return; }
+    if (line === '/skills') { showSkills(options.skills); rl.prompt(); return; }
 
     // === 检测多行输入触发 ===
 
@@ -394,7 +358,7 @@ export async function startRepl(
       if (currentText && !currentText.endsWith('\n')) process.stdout.write('\n');
 
       const t = costTracker.getTotals();
-      console.log(renderCostInfo(t.inputTokens, t.outputTokens, t.cost));
+      showCost(() => costTracker.getTotals());
       debugLog(`Response done: text=${currentText.length}chars, tokens=${t.inputTokens}in/${t.outputTokens}out`, verbose);
 
       addToHistory(input, process.cwd(), t.inputTokens, t.outputTokens);

@@ -14,7 +14,7 @@ npx tsx src/index.ts --verbose                # 教学模式（显示 Agentic Lo
 npx tsx src/index.ts --dashboard              # 启动 Web 仪表盘 (http://localhost:3334)
 npx tsx src/index.ts --continue               # 恢复最近会话
 npx tsx src/index.ts --resume [id]            # 恢复指定会话
-npm test                                      # 运行全部测试 (vitest, 85 tests)
+npm test                                      # 运行全部测试 (vitest, 113 tests)
 npx vitest run tests/unit/dashboard.test.ts   # 运行单个测试文件
 npx tsc --noEmit                              # 类型检查（不输出文件）
 ```
@@ -72,7 +72,8 @@ HTTP + WebSocket 服务器（端口 3334），内嵌 Catppuccin Mocha 风格 HTM
 
 ```
 tests/
-├── unit/          # 组件测试 (tools, systemPrompt, compactor, session, dashboard, discovery 等)
+├── unit/          # 组件测试 (tools, systemPrompt, compactor, session, dashboard,
+│                   discovery, commands, api-client, git-context, session-validation 等)
 ├── integration/   # Mock LLM 集成测试 (queryLoop 9 个场景)
 └── helpers/       # mockClient.ts
 ```
