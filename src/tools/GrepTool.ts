@@ -36,6 +36,17 @@ Supports output modes: content (default), files_with_matches, count.`,
     const ignoreCase = !!(input['-i'] as boolean);
     const context = (input['-C'] as number) || 0;
 
+    // ★ ReDoS 防护：检测危险的正则模式（嵌套量词如 (a+)+, (a*)*）
+    const dangerousPatterns = /(\([^)]*[+*][^)]*\)[+*{])|(\[[^\]]*[+*][^\]]*\][+*{])|([+*]{2,})/;
+    if (dangerousPatterns.test(pattern)) {
+      return { output: 'Error: potentially catastrophic regex pattern detected (nested quantifiers may cause ReDoS). Please simplify the pattern.', isError: true };
+    }
+
+    // ★ 正则长度限制（防止超长模式）
+    if (pattern.length > 1000) {
+      return { output: 'Error: regex pattern exceeds 1000 character limit', isError: true };
+    }
+
     try {
       // ★ 构建 ripgrep 参数 — 注意 rg 的参数顺序: options 必须在 pattern 之前
       const args: string[] = [];
@@ -71,7 +82,12 @@ async function grepNodeJS(
   outputMode: string,
   ignoreCase: boolean,
 ): Promise<string> {
-  const regex = new RegExp(pattern, ignoreCase ? 'gi' : 'g');
+  let regex: RegExp;
+  try {
+    regex = new RegExp(pattern, ignoreCase ? 'gi' : 'g');
+  } catch (e: any) {
+    throw new Error(`invalid regex pattern: ${e.message}`);
+  }
   const results: string[] = [];
 
   async function searchDir(dir: string) {

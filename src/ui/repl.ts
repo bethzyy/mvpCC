@@ -1,7 +1,7 @@
 import * as readline from 'readline';
 import chalk from 'chalk';
 import type Anthropic from '@anthropic-ai/sdk';
-import type { ConversationMessage, ToolDefinition, StreamEvent } from '../types.js';
+import type { ConversationMessage, ToolDefinition, StreamEvent, QueryResult } from '../types.js';
 import { queryLoop } from '../query/queryLoop.js';
 import { buildSystemPrompt } from '../context/systemPrompt.js';
 import { getGitContext } from '../context/gitContext.js';
@@ -9,6 +9,7 @@ import { renderToolUse } from './renderer.js';
 import { CostTracker } from '../cost/tracker.js';
 import { addToHistory } from '../history/history.js';
 import { showHelp, showCost, showHistory, showSkills } from './commands.js';
+import { stopDashboard } from '../debug/dashboard.js';
 import { debugLog, debugError } from '../utils/debugLogger.js';
 import { shouldCompact, compactMessages, estimateTokens } from '../context/compactor.js';
 import { saveSession } from '../context/session.js';
@@ -257,6 +258,9 @@ export async function startRepl(
     // 清理粘贴检测定时器
     if (lineTimer) { clearTimeout(lineTimer); lineTimer = null; }
 
+    // ★ 关闭 Web 仪表盘（释放端口和 WebSocket 连接）
+    try { await stopDashboard(); } catch { /* dashboard not started */ }
+
     // 保存会话
     if (messages.length > 0) {
       try {
@@ -316,7 +320,8 @@ export async function startRepl(
     try {
       let currentText = '';
 
-      for await (const event of queryLoop(messages, {
+      // ★ 用 .next() 手动迭代 async generator，确保捕获 return value
+      const gen = queryLoop(messages, {
         client, tools, systemPrompt,
         signal: abortController.signal,
         model: options.model,
@@ -326,7 +331,11 @@ export async function startRepl(
           log.turn(turn, `--- Turn ${turn} 结束 | ${reason} | 工具: ${toolCount} | 文本: ${textLen}字 ---`),
         onToolResult: (turn, name, output, isError) =>
           log.tool(`Turn${turn} 结果: ${name} → ${isError ? 'ERROR' : 'OK'} ${output.length > 100 ? output.slice(0, 100) + '...' : output}`),
-      })) {
+      });
+
+      let result: IteratorResult<StreamEvent, QueryResult>;
+      while ((result = await gen.next()), !result.done) {
+        const event = result.value;
         switch (event.type) {
           case 'text_delta':
             process.stdout.write(event.text);
@@ -353,6 +362,13 @@ export async function startRepl(
             log.api(`错误: ${event.error.message}`);
             break;
         }
+      }
+
+      // ★ 捕获 generator 的 return value（QueryResult）
+      // while 循环结束后 result.done === true，result.value 即为 QueryResult
+      const queryResult = result.done ? (result.value as QueryResult) : undefined;
+      if (queryResult) {
+        log.msg(`QueryLoop 结束: ${queryResult.reason}`);
       }
 
       if (currentText && !currentText.endsWith('\n')) process.stdout.write('\n');

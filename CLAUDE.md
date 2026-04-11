@@ -32,6 +32,7 @@ index.ts (CLI入口, Commander.js)
 ### 关键设计决策
 
 - **needsFollowUp 标志**：不用 `stop_reason` 判断循环是否继续（原始代码注释说 stop_reason 不可靠），收到 tool_use 时设为 true
+- **gen.next() 手动迭代**：repl.ts 用 `gen.next()` 而非 `for await...of` 消费 queryLoop，确保捕获 async generator 的 return value（QueryResult）
 - **terminal: false**：readline 强制关闭终端处理，避免 Windows PTY 双回显
 - **tool_result 在 user message 中**：Anthropic API 要求
 - **粘贴检测**：50ms 输入缓冲区分粘贴多行 vs 逐行输入
