@@ -45,6 +45,8 @@ npm run dev
 
 加 `--verbose` 参数启动，实时观察 Agentic Loop 内部运作：
 
+![Verbose 教学模式](docs/verbose-mode.png)
+
 ```
 > 读取 src/index.ts
   [MSG] 用户输入: "读取 src/index.ts"
@@ -59,6 +61,12 @@ npm run dev
   [API] stop_reason: end_turn
   [T2] --- Turn 2 结束 | done | 工具: 0 ---
 ```
+
+## Dashboard 仪表盘模式
+
+加 `--dashboard` 参数启动，自动打开 Web 仪表盘（http://localhost:3334），实时查看日志、会话状态和工具调用：
+
+![Dashboard 仪表盘模式](docs/dashboard-mode.png)
 
 ## 与原始 Claude Code 的差异
 
